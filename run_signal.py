@@ -240,6 +240,19 @@ def _format_telegram_message(data: dict) -> str:
 def main():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Building signals...")
 
+    # Time guard: only send between 8:50 AM and 10:00 AM IST
+    # Prevents accidental duplicate messages from manual triggers
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(IST)
+    hour, minute = now_ist.hour, now_ist.minute
+    in_window = (hour == 8 and minute >= 50) or (hour == 9) or (hour == 9 and minute <= 59)
+    # Simplified: between 08:50 and 10:00
+    total_min = hour * 60 + minute
+    if not (530 <= total_min <= 600):  # 8:50=530, 10:00=600
+        print(f"[{now_ist.strftime('%H:%M')} IST] Outside trading window (8:50–10:00 AM IST). Skipping.")
+        return
+
     if not is_configured():
         print("ERROR: Telegram not configured.")
         print("Run:  python telegram_notifier.py --setup")
