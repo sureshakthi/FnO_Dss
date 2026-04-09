@@ -357,6 +357,22 @@ def generate_signal(df: pd.DataFrame) -> dict:
         reasons.append("❌ SELL cancelled: Supertrend is BULLISH — no shorts in uptrend")
         direction, strength = "NEUTRAL", 0
 
+    # ADX exhaustion filter — trend too stretched, likely to reverse
+    adx_cap = STRATEGY_CONFIG.get('adx_exhausted', 50)
+    if direction != "NEUTRAL" and adx > adx_cap:
+        reasons.append(f"❌ {direction} cancelled: ADX {adx:.0f} > {adx_cap} — trend exhausted, reversal likely")
+        direction, strength = "NEUTRAL", 0
+
+    # Weekly trend counter-trade filter — SELL in bullish weekly = 0% win rate
+    if direction == "SELL" and weekly == "BULLISH":
+        reasons.append("❌ SELL cancelled: Weekly trend is BULLISH — counter-trend sells lose 100%")
+        direction, strength = "NEUTRAL", 0
+
+    # Panic volume filter — extreme volume spikes = 0% win rate
+    if direction != "NEUTRAL" and vol_ratio > 2.0:
+        reasons.append(f"❌ {direction} cancelled: Volume {vol_ratio:.1f}x — panic spike, unreliable signal")
+        direction, strength = "NEUTRAL", 0
+
     return {
         "direction":     direction,
         "strength":      strength,
