@@ -171,9 +171,10 @@ def _format_telegram_message(data: dict) -> str:
     """Format signal data as a clean Telegram message (HTML)."""
     lines = []
     lines.append(f"<b>F&O Signal — {data['date']}</b>")
-    vix = data.get('vix', 0)
-    vix_emoji = "🔴" if vix >= 25 else "🟡" if vix >= 18 else "🟢"
-    lines.append(f"{vix_emoji} India VIX: <b>{vix:.1f}</b>")
+    vix = data.get('vix', {})
+    vix_val = vix.get('value', 0) if isinstance(vix, dict) else float(vix)
+    vix_emoji = "🔴" if vix_val >= 25 else "🟡" if vix_val >= 18 else "🟢"
+    lines.append(f"{vix_emoji} India VIX: <b>{vix_val:.1f}</b>")
     lines.append("")
 
     for sym, sd in data.get('symbols', {}).items():
