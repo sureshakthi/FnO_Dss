@@ -22,7 +22,7 @@ from data_layer import fetch_daily_data, fetch_vix
 from strategy import generate_signal, calculate_indicators
 from risk import calculate_position
 from theta_strategy import get_theta_setups
-from telegram_notifier import send_signal_summary, is_configured
+from telegram_notifier import send_message, is_configured
 
 
 def _bb_width(df) -> float:
@@ -66,10 +66,13 @@ def build_signal_data() -> dict:
     except Exception:
         vix_info = {"value": 0.0, "prev": 0.0, "change_pct": 0.0, "level": "UNKNOWN"}
 
+    vix_val = vix_info.get('value', 0.0)
+
     result = {
-        "date":    today.strftime("%A, %d %B %Y"),
-        "vix":     vix_info,
-        "symbols": {},
+        "date":      today.strftime("%A, %d %B %Y"),
+        "timestamp": today.strftime("%A, %d %B %Y"),
+        "vix":       vix_info,
+        "symbols":   {},
     }
 
     for name, ticker in SYMBOLS.items():
@@ -244,13 +247,7 @@ def main():
 
     data    = build_signal_data()
     message = _format_telegram_message(data)
-
-    # Try structured send first, fall back to plain text
-    ok = send_signal_summary(data)
-    if not ok:
-        # Fallback: send plain formatted text directly
-        from telegram_notifier import send_message
-        ok = send_message(message)
+    ok      = send_message(message)
 
     if ok:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Signal sent to Telegram!")
