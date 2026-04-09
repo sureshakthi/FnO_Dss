@@ -4,13 +4,13 @@ Cloud Signal Runner — for PythonAnywhere / GitHub Actions
 This script is the CLOUD VERSION of main.py.
   - No rich terminal colors (works headless on any server)
   - Fetches signal → sends to Telegram automatically
-  - Schedule this to run at 9:10 AM IST (3:40 AM UTC) every weekday
+  - Schedule this to run at 7:00 AM IST (1:30 AM UTC) every weekday
 
 PythonAnywhere schedule command:
     python /home/YOURUSERNAME/FnO_DSS/run_signal.py
 
 GitHub Actions cron:
-    cron: '40 3 * * 1-5'   (Mon-Fri 3:40 AM UTC = 9:10 AM IST)
+    cron: '30 1 * * 1-5'   (Mon-Fri 1:30 AM UTC = 7:00 AM IST)
 """
 
 import os, sys, math
