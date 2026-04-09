@@ -63,13 +63,12 @@ def build_signal_data() -> dict:
     # VIX
     try:
         vix_info = fetch_vix()
-        vix_val  = vix_info.get('value', 0)
     except Exception:
-        vix_val = 0
+        vix_info = {"value": 0.0, "prev": 0.0, "change_pct": 0.0, "level": "UNKNOWN"}
 
     result = {
         "date":    today.strftime("%A, %d %B %Y"),
-        "vix":     vix_val,
+        "vix":     vix_info,
         "symbols": {},
     }
 
