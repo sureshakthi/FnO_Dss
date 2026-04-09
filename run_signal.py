@@ -173,16 +173,23 @@ def build_signal_data() -> dict:
 def _format_telegram_message(data: dict) -> str:
     """Format signal data as a clean Telegram message (HTML)."""
     lines = []
-    lines.append(f"<b>F&O Signal — {data['date']}</b>")
+
+    # ── Header ──
     vix = data.get('vix', {})
     vix_val = vix.get('value', 0) if isinstance(vix, dict) else float(vix)
+    vix_chg = vix.get('change_pct', 0) if isinstance(vix, dict) else 0
+    vix_lvl = vix.get('level', '') if isinstance(vix, dict) else ''
     vix_emoji = "🔴" if vix_val >= 25 else "🟡" if vix_val >= 18 else "🟢"
-    lines.append(f"{vix_emoji} India VIX: <b>{vix_val:.1f}</b>")
+    lines.append(f"🇮🇳 <b>F&amp;O Signal — {data['date']}</b>")
+    lines.append(f"🌡️ India VIX: <b>{vix_val:.1f}</b>  {vix_emoji} {vix_lvl}  ({vix_chg:+.1f}%)")
     lines.append("")
 
     for sym, sd in data.get('symbols', {}).items():
+        lines.append(f"{'━'*8} {sym} {'━'*8}")
+
         if 'error' in sd:
-            lines.append(f"<b>{sym}</b>: ⚠️ Error — {sd['error']}")
+            lines.append(f"⚠️ Data error — skipping")
+            lines.append("")
             continue
 
         regime  = sd.get('regime', '?')
@@ -192,66 +199,74 @@ def _format_telegram_message(data: dict) -> str:
         score   = sd.get('score', 0)
 
         reg_emoji = {"TRENDING": "📈", "SIDEWAYS": "↔️", "VOLATILE": "⚡"}.get(regime, "❓")
-        lines.append(f"{reg_emoji} <b>{sym}</b> @ {price:,.0f}  |  Regime: <b>{regime}</b>  |  ADX: {adx:.1f}")
+        lines.append(f"{reg_emoji} Regime: <b>{regime}</b>  |  ADX: {adx:.1f}")
+        lines.append(f"💰 Market Price: <b>{price:,.0f}</b>")
 
+        # ── TRENDING: BUY or SELL ──
         if regime == 'TRENDING' and signal in ('BUY', 'SELL'):
             sig_emoji = "🟢" if signal == 'BUY' else "🔴"
-            lines.append(f"  {sig_emoji} Signal: <b>{signal}</b>  (Score: {score}/6)")
+            lines.append(f"{sig_emoji} <b>SIGNAL: {signal}</b>  (Score: {score}/6)")
             pos = sd.get('pos')
             if pos:
-                lines.append(f"  Entry : {pos['entry']:,.0f}")
-                lines.append(f"  SL    : {pos['sl']:,.0f}")
-                lines.append(f"  Target: {pos['target']:,.0f}")
-                lines.append(f"  Lots  : {pos['lots']}")
+                entry  = pos.get('entry') or price
+                sl     = pos.get('sl') or 0
+                target = pos.get('target') or 0
+                lots   = pos.get('lots', 1)
+                lines.append(f"   📌 Entry  : <b>{entry:,.0f}</b>")
+                lines.append(f"   🎯 Target : <b>{target:,.0f}</b>")
+                lines.append(f"   🛑 SL     : <b>{sl:,.0f}</b>")
+                lines.append(f"   📦 Lots   : {lots}")
+            else:
+                lines.append(f"   📌 Entry at market open (9:15 AM)")
+
+        # ── TRENDING: NEUTRAL ──
+        elif regime == 'TRENDING' and signal == 'NEUTRAL':
+            lines.append(f"⚪ <b>NEUTRAL</b> — Trend weak. No trade today.")
+
+        # ── SIDEWAYS: Theta IC ──
         elif regime == 'SIDEWAYS':
-            sweet = sd.get('sweet', {})
+            sweet = sd.get('sweet') or {}
             sc    = sweet.get('score', 0)
             is_sw = sweet.get('is_sweet', False)
-            if is_sw:
-                lines.append(f"  ✅ Sweet-spot: {sc}/5 — ENTER THETA IC")
-                theta = sd.get('theta')
-                if theta:
-                    lines.append(f"  Name: {theta.get('name')}")
-                    lines.append(f"  Net Credit: +{theta.get('credit', 0):.0f} pts")
-                    lines.append(f"  Max Profit: +{theta.get('max_profit', 0):.0f} pts")
-                    lines.append(f"  Max Loss  : -{theta.get('max_loss', 0):.0f} pts")
-            else:
-                lines.append(f"  ⏭️ Sweet-spot: {sc}/5 — SKIP (need ≥3)")
-        elif regime == 'VOLATILE':
-            lines.append("  ⚡ Market VOLATILE — Stand Aside. No trade today.")
+            theta = sd.get('theta')
 
-        # 0-DTE Thursday
+            if is_sw and theta:
+                lines.append(f"✅ <b>THETA IC — ENTER</b>  (Sweet-spot: {sc}/5)")
+                lines.append(f"   📌 Enter at: <b>{price:,.0f}</b> (current price)")
+                lines.append(f"   💰 Net Credit : <b>+{theta.get('credit', 0):.0f} pts</b>")
+                lines.append(f"   🎯 Max Profit : +{theta.get('max_profit', 0):.0f} pts")
+                lines.append(f"   🛑 Max Loss   : -{theta.get('max_loss', 0):.0f} pts")
+            else:
+                lines.append(f"⏭️ <b>SKIP</b> — Sideways but not sweet-spot ({sc}/5, need ≥3)")
+                lines.append(f"   No trade today.")
+
+        # ── VOLATILE ──
+        elif regime == 'VOLATILE':
+            lines.append(f"⚡ <b>VOLATILE — STAND ASIDE</b>")
+            lines.append(f"   No trade today. Preserve capital.")
+
+        # ── 0-DTE Thursday IC ──
         dte = sd.get('dte_ic')
         if dte:
+            lines.append("")
             if dte.get('skip'):
-                lines.append(f"  🕐 0-DTE IC: SKIP ({dte.get('reason', '')})")
+                lines.append(f"🕐 0-DTE IC: <b>SKIP</b> — {dte.get('reason', '')}")
             else:
-                lines.append(f"  🕐 0-DTE IC (expires today):")
-                lines.append(f"     SELL {dte['sell_call']} CE | BUY {dte['buy_call']} CE")
-                lines.append(f"     SELL {dte['sell_put']}  PE | BUY {dte['buy_put']}  PE")
-                lines.append(f"     Net Credit: +{dte['credit']:.0f} pts")
-                lines.append(f"     Safe Zone: {dte['sell_put']} – {dte['sell_call']}")
+                lines.append(f"🕐 <b>0-DTE IRON CONDOR</b> (expires today)")
+                lines.append(f"   📌 Enter at: <b>{price:,.0f}</b> (current price)")
+                lines.append(f"   SELL {dte['sell_call']} CE | BUY {dte['buy_call']} CE")
+                lines.append(f"   SELL {dte['sell_put']} PE  | BUY {dte['buy_put']} PE")
+                lines.append(f"   💰 Net Credit : <b>+{dte['credit']:.0f} pts</b>")
+                lines.append(f"   📊 Safe Zone  : {dte['sell_put']} – {dte['sell_call']}")
+
         lines.append("")
 
-    lines.append("<i>Entry at 9:15–9:30 AM. Always set stop loss.</i>")
+    lines.append("<i>⏰ Enter 9:15–9:30 AM. Always set stop loss first.</i>")
     return "\n".join(lines)
 
 
 def main():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Building signals...")
-
-    # Time guard: only send between 8:50 AM and 10:00 AM IST
-    # Prevents accidental duplicate messages from manual triggers
-    from datetime import timezone, timedelta
-    IST = timezone(timedelta(hours=5, minutes=30))
-    now_ist = datetime.now(IST)
-    hour, minute = now_ist.hour, now_ist.minute
-    in_window = (hour == 8 and minute >= 50) or (hour == 9) or (hour == 9 and minute <= 59)
-    # Simplified: between 08:50 and 10:00
-    total_min = hour * 60 + minute
-    if not (530 <= total_min <= 600):  # 8:50=530, 10:00=600
-        print(f"[{now_ist.strftime('%H:%M')} IST] Outside trading window (8:50–10:00 AM IST). Skipping.")
-        return
 
     if not is_configured():
         print("ERROR: Telegram not configured.")
