@@ -2,21 +2,26 @@ name: Daily F&O Signal
 
 on:
   schedule:
+    # 3:40 AM UTC = 9:10 AM IST, Monday to Friday
     - cron: '40 3 * * 1-5'
-  workflow_dispatch:
+  workflow_dispatch:   # allows you to trigger manually from GitHub website too
 
 jobs:
   send-signal:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Run signal & send Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
