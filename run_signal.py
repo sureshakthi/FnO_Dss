@@ -1,13 +1,12 @@
 """
-Cloud Signal Runner — for PythonAnywhere / GitHub Actions
-=========================================================
-This script is the CLOUD VERSION of main.py.
-  - No rich terminal colors (works headless on any server)
-  - Fetches signal → sends to Telegram automatically
-  - Schedule this to run at 7:00 AM IST (1:30 AM UTC) every weekday
+Cloud Signal Runner — IC + 0-DTE Only
+======================================
+Sends ONLY theta-based signals:
+  1. Iron Condor (on SIDEWAYS days, sweet-spot ≥ 3)
+  2. 0-DTE Iron Condor (every day if ADX ≤ 35)
 
-PythonAnywhere schedule command:
-    python /home/YOURUSERNAME/FnO_DSS/run_signal.py
+No directional BUY/SELL signals.
+Premiums are estimated — verify on broker before entering.
 
 GitHub Actions cron:
     cron: '30 1 * * 1-5'   (Mon-Fri 1:30 AM UTC = 7:00 AM IST)
@@ -20,7 +19,6 @@ from datetime import datetime
 from config import SYMBOLS, LOT_SIZE
 from data_layer import fetch_daily_data, fetch_vix
 from strategy import generate_signal, calculate_indicators
-from risk import calculate_position
 from theta_strategy import get_theta_setups
 from telegram_notifier import send_message, is_configured
 
@@ -88,54 +86,59 @@ def build_signal_data() -> dict:
                 "regime":   regime,
                 "adx":      adx,
                 "price":    price,
-                "signal":   signal.get('signal', 'NEUTRAL'),
-                "score":    signal.get('signal_score', 0),
-                "reasons":  signal.get('reasons', []),
-                "pos":      None,
                 "theta":    None,
                 "sweet":    None,
                 "dte_ic":   None,
             }
 
-            # Position sizing (for TRENDING breakout)
-            if regime == 'TRENDING' and sym_data['signal'] in ('BUY', 'SELL'):
-                try:
-                    pos = calculate_position(signal)
-                    sym_data['pos'] = {
-                        "entry":  pos.get('entry_price'),
-                        "sl":     pos.get('stop_loss'),
-                        "target": pos.get('target'),
-                        "lots":   pos.get('lots', 1),
-                    }
-                except Exception:
-                    pass
-
-            # Theta setups (for SIDEWAYS)
-            if regime == 'SIDEWAYS':
+            # Theta IC (for SIDEWAYS days, ADX < 20)
+            if regime == 'SIDEWAYS' and adx < 20:
                 try:
                     setups = get_theta_setups(name, signal, vix_val, df)
                     sweet  = _sweet_spot_score(name, signal, vix_val, df)
                     sym_data['sweet'] = sweet
                     if setups:
                         s = setups[0]
+                        # Calculate per-leg premiums for IC
+                        lot_size  = LOT_SIZE.get(name, 50)
+                        round_to  = 100 if name == 'BANKNIFTY' else 50
+                        sigma_ic  = vix_val / 100.0
+                        t_ic      = 7 / 365.0
+                        # Use backtest-optimised strikes from theta_strategy (2.5x ATR)
+                        sc_strike = s.get('sell_call_strike', int(round((price + atr * 2.5) / round_to) * round_to))
+                        bc_strike = s.get('buy_call_strike', sc_strike + round_to)
+                        sp_strike = s.get('sell_put_strike', int(round((price - atr * 2.5) / round_to) * round_to))
+                        bp_strike = s.get('buy_put_strike', sp_strike - round_to)
+
+                        def _ic_prem(strike):
+                            m = abs(price - strike) / price
+                            atm = price * sigma_ic * math.sqrt(t_ic) * 0.40
+                            decay = math.exp(-0.5 * (m / (sigma_ic * math.sqrt(t_ic) + 1e-6))**2)
+                            return max(5.0, round(atm * decay, 0))
+
                         sym_data['theta'] = {
                             "name":       s.get('name'),
                             "legs":       s.get('legs', []),
                             "credit":     s.get('net_credit', 0),
                             "max_profit": s.get('max_profit', 0),
                             "max_loss":   s.get('max_loss', 0),
+                            "sell_call": sc_strike, "buy_call": bc_strike,
+                            "sell_put": sp_strike, "buy_put": bp_strike,
+                            "sc_prem": _ic_prem(sc_strike), "bc_prem": _ic_prem(bc_strike),
+                            "sp_prem": _ic_prem(sp_strike), "bp_prem": _ic_prem(bp_strike),
+                            "lot_size": lot_size,
                         }
                 except Exception:
                     pass
 
-            # 0-DTE on Thursdays
+            # 0-DTE on Thursdays only (weekly expiry day)
             if is_thursday:
-                if adx > 35:
-                    sym_data['dte_ic'] = {"skip": True, "reason": f"ADX {adx:.1f} > 35"}
+                if adx > 25:
+                    sym_data['dte_ic'] = {"skip": True, "reason": f"ADX {adx:.1f} > 25"}
                 else:
                     lot_size  = LOT_SIZE.get(name, 50)
                     round_to  = 100 if name == 'BANKNIFTY' else 50
-                    buffer    = atr * 0.6
+                    buffer    = atr * 1.5
                     sell_call = int(round((price + buffer) / round_to) * round_to)
                     buy_call  = sell_call + round_to
                     sell_put  = int(round((price - buffer) / round_to) * round_to)
@@ -158,6 +161,8 @@ def build_signal_data() -> dict:
                         "skip":     False,
                         "sell_call": sell_call, "buy_call": buy_call,
                         "sell_put":  sell_put,  "buy_put":  buy_put,
+                        "sc_prem": sc_p, "bc_prem": bc_p,
+                        "sp_prem": sp_p, "bp_prem": bp_p,
                         "credit":    net,
                         "lot_size":  lot_size,
                     }
@@ -195,41 +200,13 @@ def _format_telegram_message(data: dict) -> str:
         regime  = sd.get('regime', '?')
         price   = sd.get('price', 0)
         adx     = sd.get('adx', 0)
-        signal  = sd.get('signal', 'NEUTRAL')
-        score   = sd.get('score', 0)
 
         reg_emoji = {"TRENDING": "📈", "SIDEWAYS": "↔️", "VOLATILE": "⚡"}.get(regime, "❓")
         lines.append(f"{reg_emoji} Regime: <b>{regime}</b>  |  ADX: {adx:.1f}")
         lines.append(f"💰 Market Price: <b>{price:,.0f}</b>")
 
-        # ── TRENDING: BUY or SELL ──
-        if regime == 'TRENDING' and signal in ('BUY', 'SELL'):
-            sig_emoji = "🟢" if signal == 'BUY' else "🔴"
-            lines.append(f"{sig_emoji} <b>SIGNAL: {signal}</b>  (Score: {score}/6)")
-            pos = sd.get('pos')
-            lot = LOT_SIZE.get(sym, 50)
-            if pos:
-                entry  = pos.get('entry') or price
-                sl     = pos.get('sl') or 0
-                target = pos.get('target') or 0
-                lots   = pos.get('lots', 1)
-                profit_pts = abs(target - entry)
-                loss_pts   = abs(entry - sl)
-                profit_rs  = int(profit_pts * lot * lots)
-                loss_rs    = int(loss_pts * lot * lots)
-                lines.append(f"   📌 Entry  : <b>{entry:,.0f}</b>")
-                lines.append(f"   🎯 Target : <b>{target:,.0f}</b>  (+{profit_pts:.0f} pts = <b>₹{profit_rs:,} profit</b>)")
-                lines.append(f"   🛑 SL     : <b>{sl:,.0f}</b>  (-{loss_pts:.0f} pts = <b>₹{loss_rs:,} loss</b>)")
-                lines.append(f"   📦 Lots   : {lots}  ×  {lot} qty = {lots * lot} units")
-            else:
-                lines.append(f"   📌 Entry at market open (9:15 AM)")
-
-        # ── TRENDING: NEUTRAL ──
-        elif regime == 'TRENDING' and signal == 'NEUTRAL':
-            lines.append(f"⚪ <b>NEUTRAL</b> — Trend weak. No trade today.")
-
         # ── SIDEWAYS: Theta IC ──
-        elif regime == 'SIDEWAYS':
+        if regime == 'SIDEWAYS':
             sweet = sd.get('sweet') or {}
             sc    = sweet.get('score', 0)
             is_sw = sweet.get('is_sweet', False)
@@ -241,29 +218,32 @@ def _format_telegram_message(data: dict) -> str:
                 max_loss   = theta.get('max_loss', 0)
                 profit_rs  = int(credit * lot)
                 loss_rs    = int(max_loss * lot)
-                legs       = theta.get('legs', [])
+                t_lot      = theta.get('lot_size', lot)
                 lines.append(f"✅ <b>SELL IRON CONDOR</b>  (Sweet-spot: {sc}/5)")
                 lines.append(f"   📌 Action : Sell Iron Condor at 9:15 AM")
-                lines.append(f"   📊 Market Price: <b>{price:,.0f}</b>")
                 lines.append("")
-                if legs:
-                    for leg in legs:
-                        lines.append(f"   {leg}")
+                lines.append(f"   📋 <b>CALL LEG (CE):</b>")
+                lines.append(f"   ▸ SELL: <b>{sym} {theta['sell_call']} CE</b>  @ ≈₹{theta['sc_prem']:.0f}")
+                lines.append(f"   ▸ BUY:  <b>{sym} {theta['buy_call']} CE</b>  @ ≈₹{theta['bc_prem']:.0f}")
+                lines.append(f"   📋 <b>PUT LEG (PE):</b>")
+                lines.append(f"   ▸ SELL: <b>{sym} {theta['sell_put']} PE</b>  @ ≈₹{theta['sp_prem']:.0f}")
+                lines.append(f"   ▸ BUY:  <b>{sym} {theta['buy_put']} PE</b>  @ ≈₹{theta['bp_prem']:.0f}")
                 lines.append("")
+                sc_cost = int(theta['sc_prem'] * t_lot)
+                sp_cost = int(theta['sp_prem'] * t_lot)
                 lines.append(f"   💰 You Receive  : <b>+{credit:.0f} pts = ₹{profit_rs:,}</b>")
+                lines.append(f"   💵 Per lot: SELL CE ₹{sc_cost:,} + SELL PE ₹{sp_cost:,}")
                 lines.append(f"   🎯 Max Profit   : ₹{profit_rs:,}  (keep if stays sideways)")
                 lines.append(f"   🛑 Max Loss     : ₹{loss_rs:,}  (if market breaks out)")
-                lines.append(f"   📦 Lot size     : {lot}")
+                lines.append(f"   📦 Lot size     : {t_lot}")
             else:
-                lines.append(f"⏭️ <b>SKIP</b> — Market sideways but conditions not ideal ({sc}/5, need ≥3)")
-                lines.append(f"   No trade today.")
+                lines.append(f"⏭️ <b>IC SKIP</b> — Sideways but conditions not ideal ({sc}/5, need ≥3)")
 
-        # ── VOLATILE ──
         elif regime == 'VOLATILE':
             lines.append(f"⚡ <b>VOLATILE — STAND ASIDE</b>")
             lines.append(f"   No trade today. Preserve capital.")
 
-        # ── 0-DTE Thursday IC ──
+        # ── 0-DTE IC (every day) ──
         dte = sd.get('dte_ic')
         if dte:
             lines.append("")
@@ -273,15 +253,24 @@ def _format_telegram_message(data: dict) -> str:
                 lot_sz = dte.get('lot_size', LOT_SIZE.get(sym, 50))
                 credit_rs = int(dte['credit'] * lot_sz)
                 lines.append(f"🕐 <b>0-DTE IRON CONDOR</b> (expires today)")
-                lines.append(f"   📌 Enter at: <b>{price:,.0f}</b> (current price)")
-                lines.append(f"   SELL {dte['sell_call']} CE | BUY {dte['buy_call']} CE")
-                lines.append(f"   SELL {dte['sell_put']} PE  | BUY {dte['buy_put']} PE")
+                lines.append(f"")
+                lines.append(f"   📋 <b>CALL LEG (CE):</b>")
+                lines.append(f"   ▸ SELL: <b>{sym} {dte['sell_call']} CE</b>  @ ≈₹{dte['sc_prem']:.0f}")
+                lines.append(f"   ▸ BUY:  <b>{sym} {dte['buy_call']} CE</b>  @ ≈₹{dte['bc_prem']:.0f}")
+                lines.append(f"   📋 <b>PUT LEG (PE):</b>")
+                lines.append(f"   ▸ SELL: <b>{sym} {dte['sell_put']} PE</b>  @ ≈₹{dte['sp_prem']:.0f}")
+                lines.append(f"   ▸ BUY:  <b>{sym} {dte['buy_put']} PE</b>  @ ≈₹{dte['bp_prem']:.0f}")
+                lines.append(f"")
+                sc_cost = int(dte['sc_prem'] * lot_sz)
+                sp_cost = int(dte['sp_prem'] * lot_sz)
                 lines.append(f"   💰 Net Credit : <b>+{dte['credit']:.0f} pts = ₹{credit_rs:,}</b>")
+                lines.append(f"   💵 Per lot: SELL CE ₹{sc_cost:,} + SELL PE ₹{sp_cost:,}")
                 lines.append(f"   📊 Safe Zone  : {dte['sell_put']} – {dte['sell_call']}")
+                lines.append(f"   📦 Lot size     : {lot_sz}")
 
         lines.append("")
 
-    lines.append("<i>⏰ Enter 9:15–9:30 AM. Always set stop loss first.</i>")
+    lines.append("<i>⏰ Enter 9:15–9:30 AM. Premiums estimated — verify on broker.</i>")
     return "\n".join(lines)
 
 
