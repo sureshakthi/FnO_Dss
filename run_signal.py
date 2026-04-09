@@ -207,15 +207,20 @@ def _format_telegram_message(data: dict) -> str:
             sig_emoji = "🟢" if signal == 'BUY' else "🔴"
             lines.append(f"{sig_emoji} <b>SIGNAL: {signal}</b>  (Score: {score}/6)")
             pos = sd.get('pos')
+            lot = LOT_SIZE.get(sym, 50)
             if pos:
                 entry  = pos.get('entry') or price
                 sl     = pos.get('sl') or 0
                 target = pos.get('target') or 0
                 lots   = pos.get('lots', 1)
+                profit_pts = abs(target - entry)
+                loss_pts   = abs(entry - sl)
+                profit_rs  = int(profit_pts * lot * lots)
+                loss_rs    = int(loss_pts * lot * lots)
                 lines.append(f"   📌 Entry  : <b>{entry:,.0f}</b>")
-                lines.append(f"   🎯 Target : <b>{target:,.0f}</b>")
-                lines.append(f"   🛑 SL     : <b>{sl:,.0f}</b>")
-                lines.append(f"   📦 Lots   : {lots}")
+                lines.append(f"   🎯 Target : <b>{target:,.0f}</b>  (+{profit_pts:.0f} pts = <b>₹{profit_rs:,} profit</b>)")
+                lines.append(f"   🛑 SL     : <b>{sl:,.0f}</b>  (-{loss_pts:.0f} pts = <b>₹{loss_rs:,} loss</b>)")
+                lines.append(f"   📦 Lots   : {lots}  ×  {lot} qty = {lots * lot} units")
             else:
                 lines.append(f"   📌 Entry at market open (9:15 AM)")
 
@@ -229,15 +234,28 @@ def _format_telegram_message(data: dict) -> str:
             sc    = sweet.get('score', 0)
             is_sw = sweet.get('is_sweet', False)
             theta = sd.get('theta')
+            lot   = LOT_SIZE.get(sym, 50)
 
             if is_sw and theta:
-                lines.append(f"✅ <b>THETA IC — ENTER</b>  (Sweet-spot: {sc}/5)")
-                lines.append(f"   📌 Enter at: <b>{price:,.0f}</b> (current price)")
-                lines.append(f"   💰 Net Credit : <b>+{theta.get('credit', 0):.0f} pts</b>")
-                lines.append(f"   🎯 Max Profit : +{theta.get('max_profit', 0):.0f} pts")
-                lines.append(f"   🛑 Max Loss   : -{theta.get('max_loss', 0):.0f} pts")
+                credit     = theta.get('credit', 0)
+                max_loss   = theta.get('max_loss', 0)
+                profit_rs  = int(credit * lot)
+                loss_rs    = int(max_loss * lot)
+                legs       = theta.get('legs', [])
+                lines.append(f"✅ <b>SELL IRON CONDOR</b>  (Sweet-spot: {sc}/5)")
+                lines.append(f"   📌 Action : Sell Iron Condor at 9:15 AM")
+                lines.append(f"   📊 Market Price: <b>{price:,.0f}</b>")
+                lines.append("")
+                if legs:
+                    for leg in legs:
+                        lines.append(f"   {leg}")
+                lines.append("")
+                lines.append(f"   💰 You Receive  : <b>+{credit:.0f} pts = ₹{profit_rs:,}</b>")
+                lines.append(f"   🎯 Max Profit   : ₹{profit_rs:,}  (keep if stays sideways)")
+                lines.append(f"   🛑 Max Loss     : ₹{loss_rs:,}  (if market breaks out)")
+                lines.append(f"   📦 Lot size     : {lot}")
             else:
-                lines.append(f"⏭️ <b>SKIP</b> — Sideways but not sweet-spot ({sc}/5, need ≥3)")
+                lines.append(f"⏭️ <b>SKIP</b> — Market sideways but conditions not ideal ({sc}/5, need ≥3)")
                 lines.append(f"   No trade today.")
 
         # ── VOLATILE ──
@@ -252,11 +270,13 @@ def _format_telegram_message(data: dict) -> str:
             if dte.get('skip'):
                 lines.append(f"🕐 0-DTE IC: <b>SKIP</b> — {dte.get('reason', '')}")
             else:
+                lot_sz = dte.get('lot_size', LOT_SIZE.get(sym, 50))
+                credit_rs = int(dte['credit'] * lot_sz)
                 lines.append(f"🕐 <b>0-DTE IRON CONDOR</b> (expires today)")
                 lines.append(f"   📌 Enter at: <b>{price:,.0f}</b> (current price)")
                 lines.append(f"   SELL {dte['sell_call']} CE | BUY {dte['buy_call']} CE")
                 lines.append(f"   SELL {dte['sell_put']} PE  | BUY {dte['buy_put']} PE")
-                lines.append(f"   💰 Net Credit : <b>+{dte['credit']:.0f} pts</b>")
+                lines.append(f"   💰 Net Credit : <b>+{dte['credit']:.0f} pts = ₹{credit_rs:,}</b>")
                 lines.append(f"   📊 Safe Zone  : {dte['sell_put']} – {dte['sell_call']}")
 
         lines.append("")
